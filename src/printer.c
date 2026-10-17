@@ -146,14 +146,14 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
             corrupt = false;
             break;
         case CMD_PRINT:
-            if (!corrupt)
+            if (false) // TEST: always take the error branch
             {
                 status = 0x06;
                 // write to flash function
             }
             else
             {
-                status = 0x40;
+                status = 0x10;
             }
             break;
         }
