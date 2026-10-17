@@ -12,6 +12,12 @@
 #define CMD_BREAK 0x08 // break and inquiry no action needed, not implemented in process_byte
 #define CMD_INQUIRY 0x0F
 
+#define PRINT_BUSY_TIME K_SECONDS(2) // test printing time
+
+// test: dont respond with 0x81 on the Nth DATA packet. This tests whether or not the GB Cam checks for 0x81 while sending image data.
+// error 2 partway means that the gameboy does; if no error, it doesn't check.
+#define TEST_SKIP_DEVICE_ID_ON_DATA_PACKET 1
+
 static const struct gpio_dt_spec clk = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), clk_gpios); // get GPIO info from device tree
 static const struct gpio_dt_spec sin = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), sin_gpios);
 static const struct gpio_dt_spec sout = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), sout_gpios);
@@ -50,6 +56,20 @@ static uint8_t status;
 
 static bool corrupt;
 
+#ifdef TEST_SKIP_DEVICE_ID_ON_DATA_PACKET
+static uint8_t data_packet_cnt; // DATA packets received since INIT
+#endif
+
+static void print_done(struct k_work *work) // test printing method
+{
+    if (status == 0x06)
+    {
+        status = 0x04;
+    }
+}
+
+static K_WORK_DELAYABLE_DEFINE(print_work, print_done);
+
 static uint8_t process_byte(uint8_t rx) // state machine, (write more here) returns the byte to shift out during the next byte (GB protocol uses one-byte lag)
 {
     switch (packet.state)
@@ -74,6 +94,9 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
         if (rx == CMD_INIT) // INIT
         {
             image_len = 0;
+#ifdef TEST_SKIP_DEVICE_ID_ON_DATA_PACKET
+            data_packet_cnt = 0;
+#endif
         }
         packet.cmd = rx;
         packet.cur_sum += rx;
@@ -105,7 +128,8 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
         }
         else
         {
-            corrupt = true; // paused here check notes
+            corrupt = true;
+            memset(&packet, 0, sizeof(packet));
         }
 
         break;
@@ -129,6 +153,12 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
     case CHK_HI:
         packet.chk_sum = packet.chk_sum | (rx << 8);
         packet.state = DEVICE_ID;
+#ifdef TEST_SKIP_DEVICE_ID_ON_DATA_PACKET
+        if (packet.cmd == CMD_DATA && ++data_packet_cnt == TEST_SKIP_DEVICE_ID_ON_DATA_PACKET)
+        {
+            return 0x00; // don't send 0x81
+        }
+#endif
         return 0x81; // tell game boy printer is alive
     case DEVICE_ID:
         packet.state = STATUS;
@@ -149,7 +179,7 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
             if (!corrupt)
             {
                 status = 0x06;
-                // write to flash function
+                k_work_schedule(&print_work, PRINT_BUSY_TIME); // test print (not actually implemented)
             }
             else
             {
