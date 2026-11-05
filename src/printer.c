@@ -14,9 +14,10 @@
 
 #define PRINT_BUSY_TIME K_SECONDS(2) // test printing time
 
-// test: dont respond with 0x81 on the Nth DATA packet. This tests whether or not the GB Cam checks for 0x81 while sending image data.
-// error 2 partway means that the gameboy does; if no error, it doesn't check.
-#define TEST_SKIP_DEVICE_ID_ON_DATA_PACKET 1
+// test: dont respond with 0x81 on the Nth INQUIRY packet since INIT (only that one). This tests whether or not the GB Cam checks for 0x81 on INQUIRY.
+// INQUIRY1-4 are during the transfer, 5 and later are after PRINT.
+// error 2 means that the gameboy does; if no error, it doesn't check at that position.
+#define TEST_SKIP_DEVICE_ID_ON_INQUIRY_PACKET 9
 
 static const struct gpio_dt_spec clk = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), clk_gpios); // get GPIO info from device tree
 static const struct gpio_dt_spec sin = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), sin_gpios);
@@ -56,8 +57,8 @@ static uint8_t status;
 
 static bool corrupt;
 
-#ifdef TEST_SKIP_DEVICE_ID_ON_DATA_PACKET
-static uint8_t data_packet_cnt; // DATA packets received since INIT
+#ifdef TEST_SKIP_DEVICE_ID_ON_INQUIRY_PACKET
+static uint8_t inquiry_cnt; // INQUIRY packets received since INIT
 #endif
 
 static void print_done(struct k_work *work) // test printing method
@@ -94,8 +95,8 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
         if (rx == CMD_INIT) // INIT
         {
             image_len = 0;
-#ifdef TEST_SKIP_DEVICE_ID_ON_DATA_PACKET
-            data_packet_cnt = 0;
+#ifdef TEST_SKIP_DEVICE_ID_ON_INQUIRY_PACKET
+            inquiry_cnt = 0;
 #endif
         }
         packet.cmd = rx;
@@ -153,8 +154,8 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
     case CHK_HI:
         packet.chk_sum = packet.chk_sum | (rx << 8);
         packet.state = DEVICE_ID;
-#ifdef TEST_SKIP_DEVICE_ID_ON_DATA_PACKET
-        if (packet.cmd == CMD_DATA && ++data_packet_cnt == TEST_SKIP_DEVICE_ID_ON_DATA_PACKET)
+#ifdef TEST_SKIP_DEVICE_ID_ON_INQUIRY_PACKET
+        if (packet.cmd == CMD_INQUIRY && ++inquiry_cnt == TEST_SKIP_DEVICE_ID_ON_INQUIRY_PACKET)
         {
             return 0x00; // don't send 0x81
         }
