@@ -14,13 +14,28 @@
 
 #define PRINT_BUSY_TIME K_SECONDS(2) // test printing time
 
-// test: reply with status 0x40 on the Nth DATA packet. This tests whether the GB Cam reads the status byte while sending image data.
-// error 4 means it does; if no error, it doesn't check.
-#define TEST_ERROR_STATUS_ON_DATA_PACKET 1
+// test: reply with status | 0x40 on the Nth INQUIRY packet. The N count is different for INQUIRY packets than DATA packets and follows this pattern (from captures in mofosyne's arduino-gameboy-printer-emulator repository):
+// INIT
+// DATA1 INQUIRY1
+// DATA2  DATA3  INQUIRY2
+// DATA4  DATA5  INQUIRY3
+// DATA6  DATA7  INQUIRY4
+// DATA8  DATA9  DATA10 (data10 is empty end marker)
+// PRINT
+// INQUIRY(5,6,7...) (looped until status changes from busy (ignoring INQUIRY5 and INQUIRY6)) (the camera does not act on status bytes from INQUIRY5 and INQUIRY6, but behavior is not fully tested.)
+
+// error screen with LED on means that the error is read and acted on after PRINT command
+// error screen without LED on means that the error is read and acted on before PRINT command
+
+// error screen means that the camera reads 0x40 status on INQUIRY commands, no error screen means that the camera ignored the Nth INQUIRY packet status
+#define TEST_ERROR_STATUS_INQUIRY 9
 
 static const struct gpio_dt_spec clk = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), clk_gpios); // get GPIO info from device tree
 static const struct gpio_dt_spec sin = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), sin_gpios);
 static const struct gpio_dt_spec sout = GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), sout_gpios);
+#ifdef TEST_ERROR_STATUS_INQUIRY
+static const struct gpio_dt_spec led_red = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios); // test: on when PRINT arrives
+#endif
 
 static struct gpio_callback clk_cb_data;
 
@@ -56,8 +71,8 @@ static uint8_t status;
 
 static bool corrupt;
 
-#ifdef TEST_ERROR_STATUS_ON_DATA_PACKET
-static uint8_t data_packet_cnt; // DATA packets received since INIT
+#ifdef TEST_ERROR_STATUS_INQUIRY
+static uint16_t inquiry_cnt; // INQUIRY packets received since INIT
 #endif
 
 static void print_done(struct k_work *work) // test printing method
@@ -94,8 +109,9 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
         if (rx == CMD_INIT) // INIT
         {
             image_len = 0;
-#ifdef TEST_ERROR_STATUS_ON_DATA_PACKET
-            data_packet_cnt = 0;
+#ifdef TEST_ERROR_STATUS_INQUIRY
+            inquiry_cnt = 0;
+            gpio_pin_set_dt(&led_red, 0);
 #endif
         }
         packet.cmd = rx;
@@ -160,10 +176,10 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
         {
             corrupt = true;
         }
-#ifdef TEST_ERROR_STATUS_ON_DATA_PACKET
-        if (packet.cmd == CMD_DATA && ++data_packet_cnt == TEST_ERROR_STATUS_ON_DATA_PACKET)
+#ifdef TEST_ERROR_STATUS_INQUIRY
+        if (packet.cmd == CMD_INQUIRY && ++inquiry_cnt == TEST_ERROR_STATUS_INQUIRY)
         {
-            return 0x40;
+            return status | 0x40;
         }
 #endif
         return status; // do not return checksum error because uncertain checksum bit is even checked by Gameboy Cam
@@ -176,15 +192,11 @@ static uint8_t process_byte(uint8_t rx) // state machine, (write more here) retu
             corrupt = false;
             break;
         case CMD_PRINT:
-            if (!corrupt)
-            {
-                status = 0x06;
-                k_work_schedule(&print_work, PRINT_BUSY_TIME); // test print (not actually implemented)
-            }
-            else
-            {
-                status = 0x40;
-            }
+#ifdef TEST_ERROR_STATUS_INQUIRY
+            gpio_pin_set_dt(&led_red, 1); // test: PRINT packet arrived
+#endif
+            status = 0x06;
+            k_work_schedule(&print_work, PRINT_BUSY_TIME); // test print (not actually implemented)
             break;
         }
         memset(&packet, 0, sizeof(packet));
@@ -227,6 +239,9 @@ int printer_init(void)
     gpio_pin_configure_dt(&clk, GPIO_INPUT);           // initialize pins
     gpio_pin_configure_dt(&sin, GPIO_OUTPUT_INACTIVE); // sin is output pin since it is input into the gameboy not into the peripheral (set to low)
     gpio_pin_configure_dt(&sout, GPIO_INPUT);
+#ifdef TEST_ERROR_STATUS_INQUIRY
+    gpio_pin_configure_dt(&led_red, GPIO_OUTPUT_INACTIVE);
+#endif
 
     gpio_init_callback(&clk_cb_data, clk_cb, BIT(clk.pin)); // initialize clk_cb_data
     // BIT(clk.pin) bitmask selecting CLK's pin within the GPIO port.
